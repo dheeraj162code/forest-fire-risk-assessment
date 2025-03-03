@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fire Risk Map by Vegetation Type</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/convex-hull/1.0.0/convex-hull.min.js"></script>
+    <script src="data/Karnataka_Boundary_1.js"></script>
+    <script src="datagi/Chamaranagar_Boundary_2.js"></script>
+    <style>
+        #map { height: 100vh; width: 100%; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+
+    <script>
+        var map = L.map('map').setView([11.9235, 76.9405], 10);
+
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; OpenStreetMap'
+        }).addTo(map);
+
+        let firePoints = [];
+
+        // Load fire data from GeoJSON  
+        fetch('data/FF_Chamrajnagar.geojson')
+            .then(response => response.json())
+            .then(data => {
+                data.features.forEach(feature => {
+                    if (feature.geometry.type === "Point") {
+                        let coords = feature.geometry.coordinates;
+                        firePoints.push([coords[1], coords[0]]);
+                    }
+                });
+
+                createFireRiskZones();
+            })
+            .catch(error => console.error('Error loading GeoJSON:', error));
+            L.geoJson(json_Karnataka_Boundary_1, { style: { color: 'black', weight: 3, fillOpacity: 0 } }).addTo(map);
+        L.geoJson(json_Chamaranagar_Boundary_2, { style: { color: 'red', weight: 3, fillOpacity: 0 } }).addTo(map);
+
+        // Function to cluster fire points & create risk zones
+        function createFireRiskZones() {
+            let clusters = [];
+            let minDistance = 0.1; // Minimum spacing (~10 km)
+
+            firePoints.forEach(point => {
+                let placed = false;
+                for (let cluster of clusters) {
+                    if (distance(cluster.center, point) < minDistance) {
+                        cluster.points.push(point);
+                        placed = true;
+                        break;
+                    }
+                }
+                if (!placed) {
+                    clusters.push({ center: point, points: [point] });
+                }
+            });
+
+            // Ensure exactly 10 clusters (select densest)
+            clusters.sort((a, b) => b.points.length - a.points.length);
+            clusters = clusters.slice(0, 10);
+
+            // Fetch vegetation data for each cluster
+            clusters.forEach(cluster => fetchVegetation(cluster));
+        }
+
+        // Function to calculate distance between two points
+        function distance(coord1, coord2) {
+            return Math.sqrt(Math.pow(coord1[0] - coord2[0], 2) + Math.pow(coord1[1] - coord2[1], 2));
+        }
+
+        // Function to fetch vegetation type using Overpass API
+        function fetchVegetation(cluster) {
+            let [lat, lon] = cluster.center;
+            let overpassURL = `https://overpass-api.de/api/interpreter?data=[out:json];(node(around:5000,${lat},${lon})[natural];way(around:5000,${lat},${lon})[natural];relation(around:5000,${lat},${lon})[natural];);out;`;
+
+            fetch(overpassURL)
+                .then(response => response.json())
+                .then(data => {
+                    let vegetation = classifyVegetation(data);
+                    let riskLevel = getRiskLevel(vegetation);
+                    let color = getVegetationColor(vegetation);
+
+                    // Create polygon (convex hull) around fire points
+                    createPolygon(cluster.points, color, vegetation, riskLevel);
+                })
+                .catch(error => console.error('Error fetching vegetation data:', error));
+        }
+
+        // Function to classify vegetation type
+        function classifyVegetation(data) {
+            let vegetationTypes = data.elements.map(el => el.tags?.natural).filter(Boolean);
+
+            if (vegetationTypes.includes("grassland")) return "Grassland";
+            if (vegetationTypes.includes("scrub")) return "Dry Shrubland";
+            if (vegetationTypes.includes("wood") || vegetationTypes.includes("forest")) return "Forest";
+            if (vegetationTypes.includes("wetland")) return "Wetland";
+            return "Unknown";
+        }
+
+        // Function to determine fire risk level
+        function getRiskLevel(vegetation) {
+            const riskMapping = {
+                "Grassland": "High",
+                "Dry Shrubland": "High",
+                "Forest": "Medium",
+                "Wetland": "Low",
+                "Unknown": "Low"
+            };
+            return riskMapping[vegetation] || "Low";
+        }
+
+        // Function to assign colors based on vegetation type
+        function getVegetationColor(vegetation) {
+            const colorMapping = {
+                "Grassland": "red",
+                "Dry Shrubland": "orange",
+                "Forest": "green",
+                "Wetland": "blue",
+                "Unknown": "gray"
+            };
+            return colorMapping[vegetation] || "gray";
+        }
+
+        // Function to create a polygon around fire points
+        function createPolygon(points, color, vegetation, riskLevel) {
+            if (points.length < 3) return; // Need at least 3 points for a polygon
+
+            let hullPoints = convexHull(points);
+
+            L.polygon(hullPoints, {
+                color: color,
+                fillColor: color,
+                fillOpacity: 0.4
+            }).addTo(map)
+              .bindPopup(`<b>Vegetation:</b> ${vegetation}<br><b>Risk Level:</b> ${riskLevel}<br><b>Fire Count:</b> ${points.length}`);
+        }
+
+        // Convex Hull Algorithm to create polygons
+        function convexHull(points) {
+            points.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+
+            let cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+
+            let lower = [];
+            for (let p of points) {
+                while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0)
+                    lower.pop();
+                lower.push(p);
+            }
+
+            let upper = [];
+            for (let i = points.length - 1; i >= 0; i--) {
+                let p = points[i];
+                while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0)
+                    upper.pop();
+                upper.push(p);
+            }
+
+            upper.pop();
+            lower.pop();
+            return lower.concat(upper);
+        }
+    </script>
+</body>
+</html>

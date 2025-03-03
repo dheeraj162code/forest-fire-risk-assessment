@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="initial-scale=1,user-scalable=no,maximum-scale=1,width=device-width">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>Fire Incident Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
+    <style>
+        html, body, #map {
+            width: 100%; height: 100%; padding: 0; margin: 0;
+            font-family: Arial, sans-serif;
+        }
+        #controls {
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.3);
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            position: absolute;
+            top: 10px;
+            left: 10%;
+            transform: translateX(-50%);
+            z-index: 1000;
+        }
+        button {
+            background: #ff5733;
+            color: white;
+            border: none;
+            padding: 10px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+        button:hover {
+            background: #e64a19;
+        }
+        label, input {
+            margin: 5px;
+        }
+        .risk-circle {
+            transition: opacity 0.5s ease-in-out;
+        }
+        .marker-bounce {
+            animation: bounce 0.5s infinite alternate;
+        }
+        @keyframes bounce {
+            0% { transform: translateY(0); }
+            100% { transform: translateY(-5px); }
+        }
+    </style>
+</head>
+<body>
+    
+
+
+    <div id="controls">
+        <label>Start Date: <input type="date" id="startDate"></label>
+        <label>End Date: <input type="date" id="endDate"></label>
+        <button onclick="filterByDate()">Filter</button>
+        <p>Total Incidents: <span id="incidentCount">0</span></p>
+
+        <!-- Risk Zone Checkboxes -->
+        <label><input type="checkbox" id="lowRiskToggle" checked> Low Risk</label>
+        <label><input type="checkbox" id="mediumRiskToggle" checked> Medium Risk</label>
+        <label><input type="checkbox" id="highRiskToggle" checked> High Risk</label>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+    <script src="data/Karnataka_Boundary_1.js"></script>
+    <script src="data/Chamaranagar_Boundary_2.js"></script>
+
+    <script>
+        var map = L.map('map').fitBounds([[11.5941, 76.2002], [12.3496, 77.7252]]);
+
+        L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+            attribution: '',
+            minZoom: 1,
+            maxZoom: 28
+        }).addTo(map);
+
+        var allMarkers = L.layerGroup().addTo(map);
+        var lowRiskLayer = L.layerGroup().addTo(map);
+        var mediumRiskLayer = L.layerGroup().addTo(map);
+        var highRiskLayer = L.layerGroup().addTo(map);
+        var fireData = [];
+
+        function getRiskZoneDetails(density) {
+            if (density > 20) return { color: 'red', layer: highRiskLayer };
+            else if (density > 10) return { color: 'orange', layer: mediumRiskLayer };
+            else return { color: 'yellow', layer: lowRiskLayer };
+            
+        }
+
+        function computeFireDensity(data) {
+            let grid = {}, gridSize = 0.1;
+            data.features.forEach(feature => {
+                let lat = Math.round(feature.geometry.coordinates[1] / gridSize) * gridSize;
+                let lng = Math.round(feature.geometry.coordinates[0] / gridSize) * gridSize;
+                let key = `${lat},${lng}`;
+                if (!grid[key]) grid[key] = { count: 0, lat: lat, lng: lng };
+                grid[key].count++;
+            });
+            return Object.values(grid);
+        }
+
+        function loadMarkers(filteredData) {
+            allMarkers.clearLayers();
+            let count = 0;
+
+            filteredData.features.forEach(feature => {
+                let fireDate = feature.properties["Fire Date"];
+                let latlng = [feature.geometry.coordinates[1], feature.geometry.coordinates[0]];
+                let popupContent = `
+                    <b>Date:</b> ${fireDate}<br>
+                    <b>Time:</b> ${feature.properties["Fire Time"]}<br>
+                    <b>Source:</b> ${feature.properties["Source"]}<br>
+                    <b>District:</b> ${feature.properties["District"]}<br>
+                    <b>Division:</b> ${feature.properties["Division"]}<br>
+                    <b>Range:</b> ${feature.properties["Range"]}<br>
+                    <b>Block:</b> ${feature.properties["Block/Section/Round"]}<br>
+                    <b>Beat:</b> ${feature.properties["Beat"]}<br>
+                    <b>State:</b> ${feature.properties["State"]}<br>
+                    <b>Coordinates:</b> ${latlng[0].toFixed(6)}, ${latlng[1].toFixed(6)}<br>
+                    <b>land_type:</b> ${feature.properties["land_type"]}<br>
+
+
+                    
+                    
+
+                `;
+
+                L.marker(latlng).bindPopup(popupContent).addTo(allMarkers);
+                count++;
+            });
+
+            document.getElementById("incidentCount").textContent = count;
+        }
+
+        function filterByDate() {
+            let startDate = document.getElementById("startDate").value;
+            let endDate = document.getElementById("endDate").value;
+
+            if (!startDate || !endDate) {
+                alert("Please select both start and end dates.");
+                return;
+            }
+
+            let filteredData = {
+                type: "FeatureCollection",
+                features: fireData.features.filter(feature => {
+                    let fireDate = feature.properties["Fire Date"];
+                    return fireDate && fireDate >= startDate && fireDate <= endDate;
+                })
+            };
+
+            loadMarkers(filteredData);
+        }
+
+        fetch("./data/FF_Chamrajnagar.geojson")
+            .then(response => response.json())
+            .then(data => {
+                fireData = data;
+                loadMarkers(data);
+
+                let fireDensity = computeFireDensity(data);
+                fireDensity.forEach(zone => {
+                    let { color, layer } = getRiskZoneDetails(zone.count);
+                    L.circle([zone.lat, zone.lng], {
+                        radius: 5000,
+                        color: color,
+                        fillColor: color,
+                        fillOpacity: 0.5
+                    }).bindPopup(`<b>Fire Density:</b> ${zone.count}<br><b>Risk Level:</b> ${color.toUpperCase()}`).addTo(layer);
+                });
+            })
+            .catch(error => console.error("❌ Error loading GeoJSON:", error));
+
+        L.geoJson(json_Karnataka_Boundary_1, { style: { color: 'black', weight: 3, fillOpacity: 0 } }).addTo(map);
+        L.geoJson(json_Chamaranagar_Boundary_2, { style: { color: 'red', weight: 3, fillOpacity: 0 } }).addTo(map);
+
+        // Toggle Risk Layers
+        document.getElementById("lowRiskToggle").addEventListener("change", function () {
+            toggleLayer(lowRiskLayer, this.checked);
+        });
+        document.getElementById("mediumRiskToggle").addEventListener("change", function () {
+            toggleLayer(mediumRiskLayer, this.checked);
+        });
+        document.getElementById("highRiskToggle").addEventListener("change", function () {
+            toggleLayer(highRiskLayer, this.checked);
+        });
+
+        function toggleLayer(layer, isVisible) {
+            if (isVisible) {
+                map.addLayer(layer);
+            } else {
+                map.removeLayer(layer);
+            }
+        }
+
+    </script>
+
+</body>
+</html>
